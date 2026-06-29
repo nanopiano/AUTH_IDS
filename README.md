@@ -1,6 +1,7 @@
 # AUTH_IDS
 
 **Multi-model intrusion detection for IoMT authentication attacks — Ensemble + G-KDE + LSTM fused via OR-logic.**
+CREATED IN APRIL 2026
 
 This is the Tier 2 detection layer from a two-tier authentication security architecture proposed for IoMT-based Remote Patient Monitoring (RPM) systems. Tier 1 (not in this repo) covers device-to-gateway authentication using physical-layer behavior and federated learning. Tier 2, implemented here, sits at the gateway-to-backend link and detects attacks in network traffic using machine learning.
 
