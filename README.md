@@ -1,65 +1,165 @@
 # AUTH_IDS
-This is the experimental setup used to evaluate the Tier 2 component of the proposed system . Tier 2 sits at the gateway-to-backend layer and is responsible for detecting attacks using machine learning. In this work only the Tier 2 detection layer is implemented and tested, covering the ensemble classifier, the LSTM model, and the G-KDE anomaly detector.
 
-# Network Intrusion Detection with Ensemble, G-KDE, and LSTM Fusion
+**Multi-model intrusion detection for IoMT authentication attacks — Ensemble + G-KDE + LSTM fused via OR-logic.**
 
-This project implements a multi-layered intrusion detection system designed to identify various authentication-relevant network attacks using a combination of ensemble learning, Gaussian Kernel Density Estimation (G-KDE) for anomaly detection, and Long Short-Term Memory (LSTM) networks for temporal analysis. The system fuses predictions from these diverse models to achieve robust detection capabilities, prioritizing the reduction of false negatives.
+This is the Tier 2 detection layer from a two-tier authentication security architecture proposed for IoMT-based Remote Patient Monitoring (RPM) systems. Tier 1 (not in this repo) covers device-to-gateway authentication using physical-layer behavior and federated learning. Tier 2, implemented here, sits at the gateway-to-backend link and detects attacks in network traffic using machine learning.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Project Structure](#project-structure)
+- [Getting Started](#getting-started)
+- [Methodology](#methodology)
+- [Results](#results)
+- [Limitations](#limitations)
+- [Roadmap](#roadmap)
+- [Citation](#citation)
+- [Acknowledgments](#acknowledgments)
+
+## Overview
+
+Three models, each with a different strength, run in parallel and are combined with OR-logic so that a flag from any one of them is enough to escalate a session:
+
+- **Ensemble (RF + AdaBoost + Bagging)** — hard-voting classifier for known multi-protocol attack types
+- **G-KDE** — density-based anomaly detector, trained on benign traffic only, for zero-day coverage
+- **LSTM** — sequence model trained on MQTT traffic to catch temporal attack patterns invisible at the single-flow level
+
+The design priority is minimizing false negatives over false positives — in a clinical RPM context, a missed attack is a patient-safety issue, while a false positive only costs a re-authentication check.
+
+> Tier 1 (federated device authentication) and the PQC/QKD key-exchange components from the paper are **not implemented** in this repo — they're architectural proposals evaluated separately, not in code.
 
 ## Project Structure
 
-- `dataset/`: Contains the network traffic datasets used for training and testing.
-- `notebook.ipynb`: The main Jupyter notebook detailing the data loading, preprocessing, model training, evaluation, and interpretability.
+```
+AUTH_IDS/
+├── notebook.ipynb    # Data loading, preprocessing, model training, evaluation, interpretability
+└── README.md
+```
+
+No `dataset/` folder is committed to this repo — see [Dataset Setup](#dataset-setup) below.
+
+## Getting Started
+
+### Prerequisites
+
+```bash
+pip install numpy pandas matplotlib seaborn scikit-learn tensorflow shap jupyter
+```
+
+No GPU required — all three models train and run on CPU.
+
+### Dataset Setup
+
+This project uses **[CICIoMT2024](https://www.unb.ca/cic/datasets/iomt-dataset-2024.html)** (Canadian Institute for Cybersecurity), a real multi-protocol IoMT capture covering Wi-Fi, BLE, and MQTT traffic.
+
+The notebook works from a 9-file subset, relabeled into 5 classes:
+
+| Source files | Label |
+|---|---|
+| Benign | `benign` |
+| ARP_Spoofing | `spoofing` |
+| MQTT-DDoS / MQTT-DoS Connect Flood | `mqtt_auth_attack` |
+| Recon-Port_Scan, Recon-OS_Scan, Recon-VulScan | `recon` |
+| TCP_IP-DDoS-SYN, TCP_IP-DoS-SYN | `syn_attack` |
+
+1. Download the relevant `.pcap.csv` files from the CIC dataset page.
+2. Create a `dataset/` folder locally (already in `.gitignore` — it won't get committed).
+3. Drop the files in there before running the notebook.
+
+### Usage
+
+```bash
+jupyter notebook notebook.ipynb
+```
+
+Run top to bottom: data loading/merging → preprocessing → ensemble → G-KDE → LSTM → fusion → evaluation/SHAP.
 
 ## Methodology
 
-### 1. Data Loading and Preprocessing
+### 1. Data Preprocessing
 
-Network traffic data, encompassing both benign and various attack types (ARP Spoofing, MQTT-DDoS, Reconnaissance, TCP/IP SYN attacks), is loaded from `.pcap.csv` files. Key preprocessing steps include:
+- Merge individual attack/benign files into single train and test DataFrames
+- Label each record by source file (`spoofing`, `mqtt_auth_attack`, `recon`, `syn_attack`, `benign`), plus a derived binary `benign`/`attack` target
+- Clean numeric features (coerce types, zero out NaN/inf)
+- Standardize features with `StandardScaler`
+- Encode labels with `LabelEncoder`
 
-- **Merging**: Combining individual attack and benign datasets into comprehensive training and testing DataFrames.
-- **Labeling**: Assigning standardized labels (e.g., 'spoofing', 'mqtt_auth_attack', 'recon', 'syn_attack') based on filenames and mapping them to a single 'benign' or 'attack' binary classification for specific models.
-- **Filtering**: Focusing on a subset of 'authentication-relevant' attack types to streamline the threat model.
-- **Scaling**: Standardizing numerical features using `StandardScaler`.
-- **Encoding**: Converting categorical labels into numerical format using `LabelEncoder`.
+### 2. Detection Models
 
-### 2. Model Components
+**Ensemble Classifier**
+- Random Forest + AdaBoost + Bagging (Decision Tree base estimators)
+- Trained on the full multi-class feature set
+- Combined via hard/majority voting
+- Strongest on known, structurally distinctive attacks (floods, scans)
 
-The system employs three distinct models, each contributing to the overall detection capability:
+**G-KDE Anomaly Detector**
+- Fit exclusively on benign traffic — no attack labels used
+- Feature set narrowed to the top features by Random Forest importance
+- Anomaly threshold set at the 5th percentile of benign validation scores
+- Output: 0 = benign, 1 = anomaly
+- Provides zero-day coverage the ensemble can't offer
 
-#### a. Ensemble Classifier
-
-A traditional machine learning ensemble built from:
-- **Random Forest Classifier**
-- **AdaBoost Classifier**
-- **Bagging Classifier (with Decision Trees as base estimators)**
-
-These models are trained on the full feature set for multi-class classification, and their predictions are combined using a majority voting scheme.
-
-#### b. G-KDE (Gaussian Kernel Density Estimation) for Anomaly Detection
-
-- **Purpose**: Designed to detect anomalous behavior by learning the density of 'benign' traffic.
-- **Feature Selection**: Utilizes the top features identified by the Random Forest model's importance scores to focus the KDE analysis.
-- **Training**: Fitted exclusively on benign training data, with a dedicated validation split to determine an optimal anomaly threshold (e.g., 5th percentile of benign scores).
-- **Output**: Provides a binary prediction (0: benign, 1: anomaly) based on whether a sample's likelihood score falls below the learned threshold.
-
-#### c. LSTM (Long Short-Term Memory) for Temporal Analysis
-
-- **Purpose**: Specialized for detecting attacks with temporal patterns, specifically targeting MQTT-related authentication floods.
-- **Subset Training**: Trained only on the MQTT-related benign and attack traffic subset.
-- **Sequence Construction**: Data is transformed into sequences using a sliding window approach to capture temporal dependencies.
-- **Architecture**: A `Sequential` Keras model with multiple LSTM layers and Dropout for regularization, followed by a Dense output layer with sigmoid activation for binary classification.
+**LSTM (Temporal Model)**
+- Trained only on the MQTT benign/attack subset
+- Input reshaped into sliding-window sequences
+- Stacked LSTM layers + Dropout → Dense output with sigmoid activation
+- Targets attacks (e.g. slow auth flooding) that look normal in any single record but not across a sequence
 
 ### 3. Fusion Strategy
 
-To maximize attack detection rates (minimize False Negatives), the binary predictions from the Ensemble, G-KDE, and LSTM models are combined using **OR-logic**. If any of the three models classify a sample as an 'attack', the final fused prediction is 'attack'.
+OR-logic across all three binary outputs: if **any** model flags "attack," the fused result is "attack." This trades a higher false-positive rate for a lower false-negative rate — the explicit design choice for a clinical deployment context.
 
 ### 4. Evaluation
 
-The performance of individual models and the fused system is rigorously evaluated using a custom `evaluate_binary_model` function, which provides consistent metrics for binary classification (attack vs. benign):
+Each model, and the fused system, is scored with:
+- Accuracy, Precision, Recall, F1
+- False Positive Rate (FPR), False Negative Rate (FNR)
+- AUC / ROC curves
+- Confusion matrices
 
-- **Metrics**: Accuracy, Precision, Recall, F1-Score, False Positive Rate (FPR), False Negative Rate (FNR), and Area Under the ROC Curve (AUC).
-- **Visualizations**: Confusion matrices provide a clear breakdown of true positives, true negatives, false positives, and false negatives. ROC curves illustrate the trade-off between True Positive Rate and False Positive Rate for comparable models.
+### 5. Interpretability
 
-### 5. Interpretability (SHAP)
+SHAP values are computed on the Random Forest component to identify which traffic features drive each attack-type prediction — useful for audit trails in a regulated healthcare setting.
 
-SHAP (SHapley Additive exPlanations) values are used to interpret the feature importance and impact within the Random Forest component of the ensemble. This helps in understanding which network traffic features are most influential in driving the model's predictions for different attack types.
+## Results
+
+| Component | Coverage | Binary FPR | Binary FNR |
+|---|---|---|---|
+| Ensemble (RF + AdaBoost + Bagging) | Known multi-protocol attacks | 0.0123 | 0.0027 |
+| G-KDE | Any deviation from normal (zero-day) | 0.0469 | 0.0125 |
+| LSTM (MQTT subset) | Temporal auth-flood patterns | 0.0000 | 0.0001 |
+| **Combined OR-logic** | All of the above | **0.0557** | **0.0022** |
+
+Ensemble binary AUC: **0.9998**. The combined FNR is lower than any individual component — the three models have largely non-overlapping failure modes, so fusing them closes gaps no single model covers alone.
+
+**Notable weak point:** ARP spoofing (ensemble FNR ≈ 19.7% on that class). Spoofing injects a small number of forged packets rather than flooding traffic, so it doesn't trigger the volume/flag anomalies flow-level features are good at catching. G-KDE catches a portion of these misses through density deviation rather than class-boundary separation, and the LSTM exists specifically to cover temporal gaps like this on MQTT traffic.
+
+## Limitations
+
+- Evaluated on a 9-file CICIoMT2024 subset, not the full attack taxonomy
+- Spoofing is the smallest, most imbalanced class in the subset
+- LSTM coverage is MQTT v3.1.1 only — no BLE, Wi-Fi, recon, SYN, or MQTT v5.0 sequences
+- All training/inference run on CPU infrastructure, not real IoMT gateway hardware
+- No adversarial robustness testing — evaluated attacks make no attempt to evade detection
+
+## Roadmap
+
+- [ ] Add ARP-specific header features (sender/target MAC + IP) as a pre-filter to close the spoofing gap
+- [ ] Extend LSTM temporal coverage to BLE and Wi-Fi sequences
+- [ ] Benchmark inference on real gateway-class hardware (e.g. Raspberry Pi, ARM Cortex)
+- [ ] Adversarial robustness testing against an informed attacker
+
+## Citation
+
+```
+N. Ahmad, M. Ansari, A. AlYammahi, J. AlMekha, M. Fahmi,
+"Two-Tier Authentication Security Architecture for IoMT-Based Remote Patient Monitoring (RPM)
+Systems Using Machine Learning and Quantum Key Distribution,"
+Rochester Institute of Technology, Dubai, 2026.
+```
+
+## Acknowledgments
+
+- Hard-voting ensemble structure: Alharbi et al. (2025)
+- G-KDE anomaly detection approach: Zachos et al. (2025)
+- Temporal MQTT modeling: Lakshminarayana and Thilagam (2026)
